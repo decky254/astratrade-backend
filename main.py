@@ -6,7 +6,7 @@ from fastapi import FastAPI, Body
 
 app = FastAPI()
 
-# ==================== PASTE YOUR SAFARICOM KEYS HERE ====================
+# ==================== SAFARICOM GLOBAL SANDBOX KEYS ====================
 CONSUMER_KEY = "pk668GMc9GGrZ8VAnZ6VzOAj6vGAUGA6"
 CONSUMER_SECRET = "7A0tA6W4f6OAA77G"
 # ========================================================================
@@ -23,7 +23,6 @@ async def initiate_deposit(data: dict = Body(...)):
     phone = data.get("phone")  # Expected format: 2547XXXXXXXX
     amount = data.get("amount")
     
-    # Dynamically grab your Render URL path
     app_url = os.getenv("RENDER_EXTERNAL_URL", "https://astratrade-backend-9fk0.onrender.com")
     callback_url = f"{app_url}/mpesa-callback"
 
@@ -32,13 +31,21 @@ async def initiate_deposit(data: dict = Body(...)):
     password_data = f"{SHORTCODE}{PASSKEY}{timestamp}"
     password = base64.b64encode(password_data.encode()).decode("utf-8")
 
-    # 2. Fetch OAuth Token with explicitly caught response details
+    # 2. MANUALLY ENCODE KEYS TO BYPASS SAFARICOM'S 400 BAD REQUEST BUG
+    keys_string = f"{CONSUMER_KEY}:{CONSUMER_SECRET}"
+    encoded_keys = base64.b64encode(keys_string.encode("utf-8")).decode("utf-8")
+    
     auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
+    auth_headers = {
+        "Authorization": f"Base {encoded_keys}",  # Explicit custom header formatting
+        "Content-Type": "application/json"
+    }
+
     async with httpx.AsyncClient() as client:
         try:
-            token_res = await client.get(auth_url, auth=(CONSUMER_KEY, CONSUMER_SECRET))
+            # We pass the custom headers manually here
+            token_res = await client.get(auth_url, headers=auth_headers)
             
-            # If Safaricom sends any structural rejection, echo it directly to ReqBin
             if token_res.status_code != 200:
                 return {
                     "error": "Safaricom rejected your Consumer Credentials",
