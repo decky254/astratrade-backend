@@ -1,91 +1,120 @@
-import base64
-from datetime import datetime
-import httpx
 import os
+import httpx
 from fastapi import FastAPI, Body
-from fastapi.middleware.cors import CORSMiddleware  # Added for frontend connection
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
 # ==================== CORS SECURITY MIDDLEWARE ====================
-# This allows your Google Cloud Run frontend website to talk to your backend cleanly
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permits requests from any origin domain layout
+    allow_origins=["*"],  # Allows your Google Cloud Run frontend to connect cleanly
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# ==================================================================
 
-# ==================== PASTE YOUR ACTUAL DARAJA KEYS HERE ====================
-CONSUMER_KEY = "vZNe6HBgVSab6vUpMjZRETF7TDhmjrZa8Rar9fKCoMa4GoYw"
-CONSUMER_SECRET = "msRw8mymJCG8clfbpDGnCnGrdJnhycnbInnpwwU58dsh1aVhIvYfxqt2lCFruNiS"
-# ============================================================================
-
-SHORTCODE = "174379"
-PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"
+# ==================== INTASEND SECURITY KEYS ====================
+INTASEND_SECRET_TOKEN = "ISSecretKey_live_96a1d59e-e4d9-4dbe-b57b-584f0d1c1fb3"
+# ================================================================
 
 @app.get("/")
 def home():
-    return {"status": "AstraTrade Cloud Backend Is Live and Ready for Frontend Links!"}
+    return {"status": "AstraTrade Backend Connected to IntaSend Deposit & Withdrawal Engines!"}
 
+
+# ==================== DEPOSIT ENDPOINT (STK PUSH) ====================
 @app.post("/deposit")
 async def initiate_deposit(data: dict = Body(None)):
     if not data:
-        return {"error": "Your request body is empty! Verify frontend payload formatting."}
+        return {"error": "Payload is empty"}
 
-    phone = data.get("phone", "254729280743")  
-    amount = data.get("amount", 10)           
-    
-    app_url = os.getenv("RENDER_EXTERNAL_URL", "https://astratrade-backend-9fk0.onrender.com")
-    callback_url = f"{app_url}/mpesa-callback"
+    raw_phone = data.get("phone", "")
+    amount = data.get("amount", 10)
 
-    # 1. Create the security password timestamp
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    password_data = f"{SHORTCODE}{PASSKEY}{timestamp}"
-    password = base64.b64encode(password_data.encode()).decode("utf-8")
+    phone = raw_phone.strip()
+    if phone.startswith("0"):
+        phone = "254" + phone[1:]
+    elif phone.startswith("+"):
+        phone = phone.replace("+", "")
 
-    # 2. Open a single network connection context to optimize payload delivery speed
+    intasend_url = "https://api.intasend.com/api/v1/payment/mpesa-stk-push/"
+    headers = {
+        "Authorization": f"Bearer {INTASEND_SECRET_TOKEN.strip()}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    payload = {
+        "amount": str(amount),
+        "phone_number": phone,
+        "api_ref": "AstraTradeWebDeposit"
+    }
+
     async with httpx.AsyncClient() as client:
         try:
-            # Step A: Fetch fresh Token natively
-            auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
-            token_res = await client.get(auth_url, auth=(CONSUMER_KEY.strip(), CONSUMER_SECRET.strip()))
-            
-            if token_res.status_code != 200:
-                return {
-                    "error": "Safaricom rejected your credentials",
-                    "status_code": token_res.status_code,
-                    "safaricom_msg": token_res.text
-                }
-                
-            token = token_res.json()["access_token"]
-            
-            # Step B: Fire the STK Push request immediately over the active connection line
-            stk_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            payload = {
-                "BusinessShortCode": SHORTCODE,
-                "Password": password,
-                "Timestamp": timestamp,
-                "TransactionType": "CustomerPayBillOnline",
-                "Amount": int(amount),
-                "PartyA": phone,
-                "PartyB": SHORTCODE,
-                "PhoneNumber": phone,
-                "CallBackURL": callback_url,
-                "AccountReference": "AstraTradeWeb",
-                "TransactionDesc": "Web Cloud Direct Test"
-            }
-            
-            stk_res = await client.post(stk_url, json=payload, headers=headers)
-            return stk_res.json()
-
+            response = await client.post(intasend_url, json=payload, headers=headers)
+            res_json = response.json()
+            if response.status_code in [200, 201]:
+                return {"ResponseCode": "0", "ResponseDescription": "Success", "details": res_json}
+            return {"ResponseCode": "1", "ResponseDescription": res_json.get("errors", "Failed"), "details": res_json}
         except Exception as err:
-            return {"error": "Live network connection failure", "details": str(err)}
+            return {"ResponseCode": "1", "ResponseDescription": str(err)}
 
-@app.post("/mpesa-callback")
-async def mpesa_callback(payload: dict = Body(...)):
-    print("M-PESA TRANSACTION LOG RECEIVED:", payload)
-    return {"ResultCode": 0, "ResultDesc": "Success"}
+
+# ==================== WITHDRAWAL ENDPOINT (B2C PAYOUT) ====================
+@app.post("/withdraw")
+async def initiate_withdrawal(data: dict = Body(None)):
+    if not data:
+        return {"error": "Payload is empty"}
+
+    raw_phone = data.get("phone", "")
+    amount = data.get("amount", 10)
+    customer_name = data.get("name", "AstraTrade User") # IntaSend requires a name for reference
+
+    phone = raw_phone.strip()
+    if phone.startswith("0"):
+        phone = "254" + phone[1:]
+    elif phone.startswith("+"):
+        phone = phone.replace("+", "")
+
+    # IntaSend Payout (Send Money) Destination URL
+    payout_url = "https://api.intasend.com/api/v1/send-money/mpesa/"
+    
+    headers = {
+        "Authorization": f"Bearer {INTASEND_SECRET_TOKEN.strip()}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    # IntaSend expects transactions structured in a list format (supports bulk, but we pass one)
+    payload = {
+        "currency": "KES",
+        "requires_approval": "NO", # "NO" releases the money to their phone instantly without manual dashboard approval
+        "transactions": [
+            {
+                "name": customer_name,
+                "account": phone,
+                "amount": str(amount),
+                "narrative": "AstraTrade Balance Withdrawal"
+            }
+        ]
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(payout_url, json=payload, headers=headers)
+            res_json = response.json()
+            
+            if response.status_code in [200, 201]:
+                return {
+                    "ResponseCode": "0",
+                    "ResponseDescription": "Withdrawal processed successfully!",
+                    "details": res_json
+                }
+            return {
+                "ResponseCode": "1",
+                "ResponseDescription": res_json.get("errors", "Withdrawal processing rejected"),
+                "details": res_json
+            }
+        except Exception as err:
+            return {"ResponseCode": "1", "ResponseDescription": str(err)}
