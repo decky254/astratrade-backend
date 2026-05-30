@@ -8,8 +8,8 @@ app = FastAPI()
 
 # ==================== PASTE YOUR SAFARICOM KEYS HERE ====================
 # The .strip() function automatically removes any accidental spaces from phone keyboards!
-CONSUMER_KEY = "PASTE_YOUR_VZNE_APP_CONSUMER_KEY_HERE".strip()
-CONSUMER_SECRET = "PASTE_YOUR_MSRW_APP_CONSUMER_SECRET_HERE".strip()
+CONSUMER_KEY = "wG9GAr9OAnZ6Vk9AGZ6vVzAOAjGUGMcA".strip()
+CONSUMER_SECRET = "ZOA7A6GAW477fG7O".strip()
 # ========================================================================
 
 SHORTCODE = "174379"
