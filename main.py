@@ -37,7 +37,7 @@ async def initiate_deposit(data: dict = Body(...)):
     
     auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
     auth_headers = {
-        "Authorization": f"Base {encoded_keys}",  # Explicit custom header formatting
+        "Authorization": f"Basic {encoded_keys}",  # Explicit custom header formatting
         "Content-Type": "application/json"
     }
 
