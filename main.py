@@ -34,12 +34,11 @@ async def initiate_deposit(data: dict = Body(None)):
     password_data = f"{SHORTCODE}{PASSKEY}{timestamp}"
     password = base64.b64encode(password_data.encode()).decode("utf-8")
 
-    # 2. Fetch a fresh, valid token automatically using standard Basic Auth
-    auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
-    
+    # 2. Open a single, continuous network connection for both tasks
     async with httpx.AsyncClient() as client:
         try:
-            # Using basic auth tuple handles the encoding natively without header bugs
+            # Step A: Fetch a fresh token
+            auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
             token_res = await client.get(auth_url, auth=(CONSUMER_KEY.strip(), CONSUMER_SECRET.strip()))
             
             if token_res.status_code != 200:
@@ -51,31 +50,28 @@ async def initiate_deposit(data: dict = Body(None)):
                 
             token = token_res.json()["access_token"]
             
-        except Exception as err:
-            return {"error": "OAuth Handshake Failed", "details": str(err)}
+            # Step B: Fire the STK Push immediately while the client connection is open
+            stk_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            payload = {
+                "BusinessShortCode": SHORTCODE,
+                "Password": password,
+                "Timestamp": timestamp,
+                "TransactionType": "CustomerPayBillOnline",
+                "Amount": int(amount),
+                "PartyA": phone,
+                "PartyB": SHORTCODE,
+                "PhoneNumber": phone,
+                "CallBackURL": callback_url,
+                "AccountReference": "AstraTradeWeb",
+                "TransactionDesc": "Web Cloud Direct Test"
+            }
+            
+            stk_res = await client.post(stk_url, json=payload, headers=headers)
+            return stk_res.json()
 
-    # 3. Request the STK Push
-    stk_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {
-        "BusinessShortCode": SHORTCODE,
-        "Password": password,
-        "Timestamp": timestamp,
-        "TransactionType": "CustomerPayBillOnline",
-        "Amount": int(amount),
-        "PartyA": phone,
-        "PartyB": SHORTCODE,
-        "PhoneNumber": phone,
-        "CallBackURL": callback_url,
-        "AccountReference": "AstraTradeWeb",
-        "TransactionDesc": "Web Cloud Direct Test"
-    }
-    
-    try:
-        stk_res = await client.post(stk_url, json=payload, headers=headers)
-        return stk_res.json()
-    except Exception as err:
-        return {"error": "STK Push Request Failed", "details": str(err)}
+        except Exception as err:
+            return {"error": "Live network connection failure", "details": str(err)}
 
 @app.post("/mpesa-callback")
 async def mpesa_callback(payload: dict = Body(...)):
