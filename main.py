@@ -8,7 +8,7 @@ app = FastAPI()
 
 # ==================== SAFARICOM GLOBAL SANDBOX KEYS ====================
 CONSUMER_KEY = "pk668GMc9GGrZ8VAnZ6VzOAj6vGAUGA6"
-CONSUMER_SECRET = "7A0tA6W4f6OAA77G"
+CONSUMER_SECRET = "msRw8mymJCG8clfbpDGnCnGrdJnhycnbInnpwwU58dsh1aVhIvYfxqt2lCFruNiS"
 # ========================================================================
 
 SHORTCODE = "174379"
