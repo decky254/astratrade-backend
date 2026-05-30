@@ -23,30 +23,37 @@ async def initiate_deposit(data: dict = Body(...)):
     phone = data.get("phone")  # Expected format: 2547XXXXXXXX
     amount = data.get("amount")
     
-    # Render provides your unique website URL dynamically via this system string
+    # Dynamically grab your Render URL path
     app_url = os.getenv("RENDER_EXTERNAL_URL", "https://astratrade-backend-9fk0.onrender.com")
     callback_url = f"{app_url}/mpesa-callback"
 
-    # 1. Create the timestamped Security Password for Safaricom
+    # 1. Create the security password timestamp
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     password_data = f"{SHORTCODE}{PASSKEY}{timestamp}"
     password = base64.b64encode(password_data.encode()).decode("utf-8")
 
-    # 2. Fetch the Live OAuth Access Token from Daraja
+    # 2. Fetch OAuth Token with explicitly caught response details
     auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
     async with httpx.AsyncClient() as client:
-        token_res = await client.get(auth_url, auth=(CONSUMER_KEY, CONSUMER_SECRET))
-        
-        # If Safaricom rejects your keys, this will print the exact reason in Render Logs
-        if token_res.status_code != 200:
-            return {
-                "error": "Safaricom rejected your Consumer Credentials",
-                "safaricom_response": token_res.text
-            }
+        try:
+            token_res = await client.get(auth_url, auth=(CONSUMER_KEY, CONSUMER_SECRET))
             
-        token = token_res.json()["access_token"]
+            # If Safaricom sends any structural rejection, echo it directly to ReqBin
+            if token_res.status_code != 200:
+                return {
+                    "error": "Safaricom rejected your Consumer Credentials",
+                    "http_status": token_res.status_code,
+                    "safaricom_raw_error": token_res.text
+                }
+                
+            token = token_res.json()["access_token"]
+        except Exception as err:
+            return {
+                "error": "Failed to connect to Safaricom network",
+                "exception_details": str(err)
+            }
 
-    # 3. Fire the STK Push prompt to your phone
+    # 3. Request the STK Push prompt layout
     stk_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
@@ -68,6 +75,5 @@ async def initiate_deposit(data: dict = Body(...)):
 
 @app.post("/mpesa-callback")
 async def mpesa_callback(payload: dict = Body(...)):
-    # Safaricom hits this endpoint automatically when you type your PIN
     print("M-PESA TRANSACTION LOG RECEIVED:", payload)
-    return {"ResultCode": 0, "ResultDesc": "Success"} 
+    return {"ResultCode": 0, "ResultDesc": "Success"}
