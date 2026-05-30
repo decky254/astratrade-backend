@@ -3,8 +3,20 @@ from datetime import datetime
 import httpx
 import os
 from fastapi import FastAPI, Body
+from fastapi.middleware.cors import CORSMiddleware  # Added for frontend connection
 
 app = FastAPI()
+
+# ==================== CORS SECURITY MIDDLEWARE ====================
+# This allows your Google Cloud Run frontend website to talk to your backend cleanly
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Permits requests from any origin domain layout
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# ==================================================================
 
 # ==================== PASTE YOUR ACTUAL DARAJA KEYS HERE ====================
 CONSUMER_KEY = "vZNe6HBgVSab6vUpMjZRETF7TDhmjrZa8Rar9fKCoMa4GoYw"
@@ -16,12 +28,12 @@ PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"
 
 @app.get("/")
 def home():
-    return {"status": "AstraTrade Cloud Backend Is Live!"}
+    return {"status": "AstraTrade Cloud Backend Is Live and Ready for Frontend Links!"}
 
 @app.post("/deposit")
 async def initiate_deposit(data: dict = Body(None)):
     if not data:
-        return {"error": "Your request body is empty! Verify ReqBin is set to JSON format."}
+        return {"error": "Your request body is empty! Verify frontend payload formatting."}
 
     phone = data.get("phone", "254729280743")  
     amount = data.get("amount", 10)           
@@ -34,10 +46,10 @@ async def initiate_deposit(data: dict = Body(None)):
     password_data = f"{SHORTCODE}{PASSKEY}{timestamp}"
     password = base64.b64encode(password_data.encode()).decode("utf-8")
 
-    # 2. Open a single, continuous network connection for both tasks
+    # 2. Open a single network connection context to optimize payload delivery speed
     async with httpx.AsyncClient() as client:
         try:
-            # Step A: Fetch a fresh token
+            # Step A: Fetch fresh Token natively
             auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
             token_res = await client.get(auth_url, auth=(CONSUMER_KEY.strip(), CONSUMER_SECRET.strip()))
             
@@ -50,7 +62,7 @@ async def initiate_deposit(data: dict = Body(None)):
                 
             token = token_res.json()["access_token"]
             
-            # Step B: Fire the STK Push immediately while the client connection is open
+            # Step B: Fire the STK Push request immediately over the active connection line
             stk_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             payload = {
