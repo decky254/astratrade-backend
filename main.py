@@ -7,8 +7,8 @@ from fastapi import FastAPI, Body
 app = FastAPI()
 
 # ==================== PASTE YOUR SAFARICOM KEYS HERE ====================
-CONSUMER_KEY = "PASTE_YOUR_ACTUAL_DARAJA_CONSUMER_KEY_HERE"
-CONSUMER_SECRET = "PASTE_YOUR_ACTUAL_DARAJA_CONSUMER_SECRET_HERE"
+CONSUMER_KEY = "pk668GMc9GGrZ8VAnZ6VzOAj6vGAUGA6"
+CONSUMER_SECRET = "7A0tA6W4f6OAA77G"
 # ========================================================================
 
 SHORTCODE = "174379"
