@@ -6,9 +6,10 @@ from fastapi import FastAPI, Body
 
 app = FastAPI()
 
-# ==================== SAFARICOM GLOBAL SANDBOX KEYS ====================
-CONSUMER_KEY = "pk668GMc9GGrZ8VAnZ6VzOAj6vGAUGA6"
-CONSUMER_SECRET = "msRw8mymJCG8clfbpDGnCnGrdJnhycnbInnpwwU58dsh1aVhIvYfxqt2lCFruNiS"
+# ==================== PASTE YOUR SAFARICOM KEYS HERE ====================
+# The .strip() function automatically removes any accidental spaces from phone keyboards!
+CONSUMER_KEY = "PASTE_YOUR_VZNE_APP_CONSUMER_KEY_HERE".strip()
+CONSUMER_SECRET = "PASTE_YOUR_MSRW_APP_CONSUMER_SECRET_HERE".strip()
 # ========================================================================
 
 SHORTCODE = "174379"
@@ -19,9 +20,16 @@ def home():
     return {"status": "AstraTrade Cloud Backend Is Live!"}
 
 @app.post("/deposit")
-async def initiate_deposit(data: dict = Body(...)):
-    phone = data.get("phone")  # Expected format: 2547XXXXXXXX
-    amount = data.get("amount")
+async def initiate_deposit(data: dict = Body(None)):
+    # Fallback if ReqBin sends an empty or broken body layout
+    if not data:
+        return {
+            "error": "Your request body is empty!",
+            "solution": "Make sure ReqBin is set to JSON and you pasted the phone/amount text."
+        }
+
+    phone = data.get("phone", "254729280743")  # Defaults to your number if missing
+    amount = data.get("amount", 10)           # Defaults to 10 Kes if missing
     
     app_url = os.getenv("RENDER_EXTERNAL_URL", "https://astratrade-backend-9fk0.onrender.com")
     callback_url = f"{app_url}/mpesa-callback"
@@ -31,26 +39,26 @@ async def initiate_deposit(data: dict = Body(...)):
     password_data = f"{SHORTCODE}{PASSKEY}{timestamp}"
     password = base64.b64encode(password_data.encode()).decode("utf-8")
 
-    # 2. MANUALLY ENCODE KEYS TO BYPASS SAFARICOM'S 400 BAD REQUEST BUG
+    # 2. Encode Keys securely
     keys_string = f"{CONSUMER_KEY}:{CONSUMER_SECRET}"
     encoded_keys = base64.b64encode(keys_string.encode("utf-8")).decode("utf-8")
     
     auth_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
     auth_headers = {
-        "Authorization": f"Basic {encoded_keys}",  # Explicit custom header formatting
+        "Authorization": f"Basic {encoded_keys}",
         "Content-Type": "application/json"
     }
 
     async with httpx.AsyncClient() as client:
         try:
-            # We pass the custom headers manually here
             token_res = await client.get(auth_url, headers=auth_headers)
             
             if token_res.status_code != 200:
                 return {
                     "error": "Safaricom rejected your Consumer Credentials",
                     "http_status": token_res.status_code,
-                    "safaricom_raw_error": token_res.text
+                    "safaricom_raw_error": token_res.text,
+                    "tip": "Double check that your Daraja app is a Sandbox app, not Production."
                 }
                 
             token = token_res.json()["access_token"]
@@ -60,7 +68,7 @@ async def initiate_deposit(data: dict = Body(...)):
                 "exception_details": str(err)
             }
 
-    # 3. Request the STK Push prompt layout
+    # 3. Request the STK Push
     stk_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
