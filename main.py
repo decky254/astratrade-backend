@@ -42,7 +42,7 @@ INTASEND_SECRET_KEY = os.getenv("INTASEND_SECRET_KEY", "your_api_token_here")
 # --- DATA VALIDATION SCHEMAS (PYDANTIC) ---
 class DepositPayload(BaseModel):
     user_id: str
-    phone_number: str = Field(..., description="M-Pesa sequence format: 2547XXXXXXXX")
+    phone_number: str = Field(..., description="M-Pesa sequence format: Supports local or international entry")
     amount: float = Field(..., gt=0)
 
 class WithdrawalPayload(BaseModel):
@@ -85,6 +85,27 @@ def get_live_nse_price(ticker: str) -> float:
     return base_prices.get(ticker.upper(), 10.00)
 
 
+def sanitize_mpesa_phone(phone: str) -> str:
+    """
+    🛡️ PHONE SANITIZER: Automatically normalizes Kenyan phone formats into the 
+    strict international string '2547XXXXXXXX' required by the payment gateway.
+    """
+    # Strip away whitespace, dashes, or leading plus signs
+    cleaned = phone.strip().replace("+", "").replace("-", "").replace(" ", "")
+    
+    if cleaned.startswith("07") or cleaned.startswith("01"):
+        cleaned = "254" + cleaned[1:]
+    elif cleaned.startswith("7") or cleaned.startswith("1"):
+        cleaned = "254" + cleaned
+        
+    if not cleaned.startswith("254") or len(cleaned) != 12:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid M-Pesa format structure: '{phone}'. Use 2547XXXXXXXX or 07XXXXXXXX format."
+        )
+    return cleaned
+
+
 # --- ACCOUNT WALLET & PAYMENT FLOWS ---
 
 @app.get("/api/v1/wallet/{user_id}")
@@ -107,6 +128,9 @@ def process_stk_deposit(payload: DepositPayload):
             detail="Transaction aborted. Minimum execution threshold is KSh 10.00"
         )
         
+    # Run incoming phone format cleanup process
+    sanitized_phone = sanitize_mpesa_phone(payload.phone_number)
+        
     gateway_url = "https://sandbox.intasend.com/api/v1/payment/mpesa-stk-push/"
     headers = {
         "Authorization": f"Bearer {INTASEND_SECRET_KEY}",
@@ -115,7 +139,7 @@ def process_stk_deposit(payload: DepositPayload):
     }
     body = {
         "amount": str(payload.amount),
-        "phone_number": payload.phone_number,
+        "phone_number": sanitized_phone,
         "narrative": "AstraTrade Capital Deposit Injection",
         "api_ref": payload.user_id 
     }
@@ -140,12 +164,14 @@ def process_stk_deposit(payload: DepositPayload):
             "timestamp": time.time()
         }
         
-        print(f"[M-PESA OUTBOUND] STK Push transmitted to {payload.phone_number} with track reference: {generated_ref}")
+        print(f"[M-PESA OUTBOUND] STK Push transmitted cleanly to {sanitized_phone}")
         return {
             "status": "SUCCESS",
             "message": "STK Push successfully routed. Awaiting user device signature tracking verification.",
             "gateway_ref": generated_ref
         }
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(
             status_code=500, 
@@ -272,7 +298,6 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
     trade_id = payload.trade_id
     initial_stake = payload.amount_kes
     
-    # 🌟 DYNAMIC REAL-TIME REGISTRATION FIX
     if trade_id not in ACTIVE_USER_TRADES:
         ACTIVE_USER_TRADES[trade_id] = {
             "user_id": payload.user_id,
@@ -284,7 +309,7 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
         }
         
     trade = ACTIVE_USER_TRADES[trade_id]
-    trade["stake_kes"] = initial_stake # Overwrite state map to ensure total structural alignment
+    trade["stake_kes"] = initial_stake 
     
     if trade["status"] != "HELD":
         raise HTTPException(
@@ -293,7 +318,6 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
         )
         
     if payload.settlement_type == "PARTIAL_CLOSE":
-        # 🧾 DYNAMIC MATHEMATICAL PROJECTIONS
         penalty_fee = initial_stake * 0.30
         guaranteed_payout_pool = initial_stake * 0.70  
         
@@ -328,12 +352,8 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
 
 @app.post("/api/v1/internal/settle-weekend-orders")
 def settle_weekend_orders():
-    # Global declaration at top of scope blocks compiler crashes
     global PENDING_WEEKEND_ORDERS
-    
-    print(f"[MONDAY BELL SETTLEMENT RUNNING] Clearing {len(PENDING_WEEKEND_ORDERS)} held weekend market entries...")
     processed_count = 0
-    
     current_queue = list(PENDING_WEEKEND_ORDERS)
     PENDING_WEEKEND_ORDERS = [] 
     
@@ -353,4 +373,4 @@ def settle_weekend_orders():
     return {
         "status": "COMPLETED",
         "message": f"Successfully settled {processed_count} outstanding weekend escrow orders."
-    }             
+    }
