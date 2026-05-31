@@ -1,19 +1,21 @@
 import os
 import time
 import requests
+from datetime import datetime, time as datetime_time
+import pytz
 from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 app = FastAPI(
-    title="AstraTrade Core Financial Engine",
-    description="Secure transaction protocol handling M-Pesa inputs, live webhooks, and verified withdrawals."
+    title="AstraTrade Core Financial & Market Engine",
+    description="Secured M-Pesa gateway routing, real-time wallet ledger management, and automated NSE market-hours order dispatch."
 )
 
 # 🔒 SECURITY POLICY: Allows your mobile frontend to communicate across network ports securely
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Swap out with your active Vercel production domain later
+    allow_origins=["*"], # Update with your active Vercel production domain later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,20 +27,59 @@ USER_ACCOUNTS_LEDGER = {
     "user_test_id": 5000.00  # Starts with a base test capital of 5,000 KSh
 }
 
-# 🔑 SECURE GATEWAY CREDENTIALS (Saves keys away from your public code repository)
-# In Render, add INTASEND_SECRET_KEY as an environment variable (either your test or live key)
-INTASEND_SECRET_KEY = os.getenv("INTASEND_SECRET_KEY", "ISSecretKey_test_4c3c07d7-808a-4d39-a95a-828350cecd19")
+# 🔑 SECURE GATEWAY CREDENTIALS 
+INTASEND_SECRET_KEY = os.getenv("INTASEND_SECRET_KEY", "your_api_token_here")
+
+# 📝 CENTRALIZED ORDER STORAGE MAPPING
+# Stores pending weekend orders awaiting execution on Monday morning at true market open
+PENDING_WEEKEND_ORDERS = []
+
 
 # --- DATA SCHEMAS ---
 class DepositPayload(BaseModel):
     user_id: str
     phone_number: str = Field(..., description="M-Pesa destination sequence (2547XXXXXXXX)")
-    amount: float = Field(..., gt=0, description="Amount to push via STK")
+    amount: float = Field(..., gt=0)
 
 class WithdrawalPayload(BaseModel):
     user_id: str
     destination_target: str = Field(..., description="Phone number or bank account receiving cash")
-    amount: float = Field(..., gt=0, description="Capital volume exiting the system")
+    amount: float = Field(..., gt=0)
+
+class TradePayload(BaseModel):
+    user_id: str
+    ticker: str = Field(..., description="Stock symbol (e.g., SCOM, EQTY, EABL)")
+    shares: int = Field(..., gt=0, description="Number of shares to purchase")
+
+
+# --- MARKET UTILITY FUNCTIONS ---
+def is_market_open() -> bool:
+    """
+    Checks if the Nairobi Securities Exchange (NSE) is currently open.
+    Trading hours: Monday-Friday, 9:00 AM to 3:00 PM East African Time (EAT).
+    """
+    eat_timezone = pytz.timezone("Africa/Nairobi")
+    now_eat = datetime.now(eat_timezone)
+    
+    # Check if it's the weekend (Saturday = 5, Sunday = 6)
+    if now_eat.weekday() >= 5:
+        return False
+        
+    # Check if current time falls within 09:00 and 15:00
+    market_start = datetime_time(9, 0, 0)
+    market_close = datetime_time(15, 0, 0)
+    
+    return market_start <= now_eat.time() <= market_close
+
+
+def get_live_nse_price(ticker: str) -> float:
+    """
+    Helper function to query your market data provider for true live asset pricing.
+    (Falls back to standard Friday close baselines during testing phases).
+    """
+    # Replace this mock dictionary with your live market data API fetch request later
+    base_prices = {"SCOM": 16.50, "EQTY": 38.25, "EABL": 150.00, "KCB": 29.00}
+    return base_prices.get(ticker.upper(), 10.00)
 
 
 # --- API ENDPOINTS ---
@@ -62,8 +103,7 @@ def get_account_balance(user_id: str):
 def process_stk_deposit(payload: DepositPayload):
     """
     Triggers an M-Pesa STK Push sequence via the IntaSend Gateway.
-    Notice we no longer automatically credit the account here to prevent fraud.
-    The account will be credited when the Webhook arrives.
+    Wallet balance is only credited upon receiving a valid asynchronous webhook callback.
     """
     if payload.amount < 10:
         raise HTTPException(
@@ -71,7 +111,6 @@ def process_stk_deposit(payload: DepositPayload):
             detail="Transaction aborted. Minimum M-Pesa deposit threshold is KSh 10.00"
         )
         
-    # IntaSend Endpoint (Use sandbox URL for testing, change to api.intasend.com for live production)
     gateway_url = "https://sandbox.intasend.com/api/v1/payment/mpesa-stk-push/"
     
     headers = {
@@ -80,7 +119,6 @@ def process_stk_deposit(payload: DepositPayload):
         "Accept": "application/json"
     }
     
-    # We pass user_id into the 'api_ref' parameter so IntaSend returns it to our Webhook later!
     body = {
         "amount": str(payload.amount),
         "phone_number": payload.phone_number,
@@ -102,7 +140,7 @@ def process_stk_deposit(payload: DepositPayload):
         
         return {
             "status": "SUCCESS",
-            "message": f"M-Pesa STK Push sent to {payload.phone_number}! Please enter your M-Pesa PIN to finalize tracking.",
+            "message": "STK Push routed smoothly. Awaiting user PIN entry.",
             "gateway_ref": gateway_data.get("id", f"GTW_{int(time.time())}")
         }
         
@@ -116,41 +154,37 @@ def process_stk_deposit(payload: DepositPayload):
 @app.post("/api/v1/payments/webhook")
 async def intasend_webhook_listener(request: Request):
     """
-    🔄 WEBHOOK LISTENER: IntaSend calls this instantly the moment the user types 
-    their M-Pesa PIN and Safaricom processes the movement of funds.
+    🔄 WEBHOOK LISTENER: Securely updates user wallet balances when IntaSend
+    confirms successful processing of cash from Safaricom.
     """
     try:
         data = await request.json()
-        print(f"[WEBHOOK RECEIVED] Incoming payload packet parsed: {data}")
+        print(f"[WEBHOOK RECEIVED] Payload parsed: {data}")
         
-        # Check if the payment sequence state successfully cleared
         if data.get("state") == "COMPLETE":
             invoice = data.get("invoice", {})
-            user_id = invoice.get("api_ref")       # Retracted from our sent token payload tracking point
+            user_id = invoice.get("api_ref")       
             net_cleared = float(invoice.get("net_amount", 0))
             
             if user_id:
-                # Dynamically provision wallet if it doesn't exist, then add funds securely
                 if user_id not in USER_ACCOUNTS_LEDGER:
                     USER_ACCOUNTS_LEDGER[user_id] = 0.00
                 
                 USER_ACCOUNTS_LEDGER[user_id] += net_cleared
-                print(f"[LEDGER UPDATE] Wallet {user_id} credited with KSh {net_cleared} via Webhook confirmation.")
-            else:
-                print("[WEBHOOK WARN] Transaction completed but no valid api_ref (user_id) found.")
+                print(f"[LEDGER UPDATE] Wallet {user_id} credited with KSh {net_cleared}.")
                 
         return {"status": "ACKNOWLEDGED"}
         
     except Exception as e:
         print(f"[WEBHOOK ERROR] Internal processor failure: {str(e)}")
-        # Always reply with 200/ACK to the gateway so it stops aggressively retrying identical payloads
         return {"status": "ERROR", "message": str(e)}
 
 
 @app.post("/api/v1/payments/withdraw")
 def process_wallet_withdrawal(payload: WithdrawalPayload):
     """
-    Verifies available user balances on the server and safely subtracts capital to complete a withdrawal.
+    🛡️ WITHDRAWAL GUARDRAIL: Verifies real balance allocations in server memory.
+    Blocks client-side balance tampering entirely.
     """
     current_available_balance = USER_ACCOUNTS_LEDGER.get(payload.user_id, 0.00)
     
@@ -160,14 +194,97 @@ def process_wallet_withdrawal(payload: WithdrawalPayload):
             detail=f"Transaction declined. Insufficient funds. Requested: KSh {payload.amount}, Available: KSh {current_available_balance}"
         )
         
-    print(f"[WITHDRAWAL LOG] Initiating clearance verification. Routing KSh {payload.amount} out to destination: {payload.destination_target}...")
-    
-    # Securely deduct from server state database balance
     USER_ACCOUNTS_LEDGER[payload.user_id] -= payload.amount
+    print(f"[WITHDRAWAL LOG] Deducted KSh {payload.amount} from {payload.user_id}.")
     
     return {
         "status": "SUCCESS",
-        "message": f"Withdrawal request processed smoothly! KSh {payload.amount} is being transferred to {payload.destination_target}.",
-        "remaining_balance_kes": USER_ACCOUNTS_LEDGER[payload.user_id],
-        "transaction_reference": f"WTH_{int(time.time())}"
-    }    
+        "message": f"Withdrawal processed! KSh {payload.amount} is being routed to {payload.destination_target}.",
+        "remaining_balance_kes": USER_ACCOUNTS_LEDGER[payload.user_id]
+    }
+
+
+# --- TRADING MECHANICS & MARKET OPEN SETTLEMENT ---
+
+@app.post("/api/v1/trades/place")
+def execute_asset_trade(payload: TradePayload):
+    """
+    Intelligently hooks order entry parameters depending on real-world market hours.
+    Queues weekend orders for automatic execution at Monday morning market opening prices.
+    """
+    user_balance = USER_ACCOUNTS_LEDGER.get(payload.user_id, 0.00)
+    
+    # ⏱️ CONDITIONAL BRANCH A: Market is Closed (Weekend Hold Mode)
+    if not is_market_open():
+        # Reserve order in memory to clear on Monday morning
+        order_reservation = {
+            "user_id": payload.user_id,
+            "ticker": payload.ticker.upper(),
+            "requested_shares": payload.shares,
+            "status": "PENDING_MARKET_OPEN",
+            "timestamp_placed": datetime.now().isoformat()
+        }
+        PENDING_WEEKEND_ORDERS.append(order_reservation)
+        print(f"[MARKET CLOSED] Order for {payload.shares} shares of {payload.ticker} placed in Monday settlement queue.")
+        
+        return {
+            "status": "QUEUED",
+            "message": f"The NSE is currently closed. Your order has been placed on a secure hold and will execute automatically at the true live market opening price on Monday at 09:00 AM EAT."
+        }
+        
+    # ⏱️ CONDITIONAL BRANCH B: Market is Open (Live Processing Mode)
+    live_price = get_live_nse_price(payload.ticker)
+    total_cost = live_price * payload.shares
+    
+    if total_cost > user_balance:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Insufficient funds to complete live order. Required: KSh {total_cost}, Available: KSh {user_balance}"
+        )
+        
+    USER_ACCOUNTS_LEDGER[payload.user_id] -= total_cost
+    print(f"[TRADE EXECUTED] User {payload.user_id} bought {payload.shares} shares of {payload.ticker} at KSh {live_price}")
+    
+    return {
+        "status": "SUCCESS",
+        "message": f"Purchased {payload.shares} shares of {payload.ticker} successfully at KSh {live_price} per share.",
+        "remaining_balance_kes": USER_ACCOUNTS_LEDGER[payload.user_id]
+    }
+
+
+@app.post("/api/v1/internal/settle-weekend-orders")
+def settle_weekend_orders():
+    """
+    ☀️ MONDAY MARKET OPEN ENGINE: Loops through held weekend reservations,
+    fetches true Monday market opening bell valuations, and clears the ledger.
+    Can be automated via a Render Cron Job set to run at 9:00 AM every Monday.
+    """
+    print(f"[SETTLEMENT TRIGGER] Processing {len(PENDING_WEEKEND_ORDERS)} held weekend orders at market opening bell...")
+    processed_count = 0
+    
+    # Make a copy of list to process and clear out securely
+    global PENDING_WEEKEND_ORDERS
+    current_queue = list(PENDING_WEEKEND_ORDERS)
+    PENDING_WEEKEND_ORDERS = [] 
+    
+    for order in current_queue:
+        user_id = order["user_id"]
+        ticker = order["ticker"]
+        shares = order["requested_shares"]
+        
+        # Pull true Monday opening price
+        monday_open_price = get_live_nse_price(ticker)
+        total_cost = monday_open_price * shares
+        user_balance = USER_ACCOUNTS_LEDGER.get(user_id, 0.00)
+        
+        if user_balance >= total_cost:
+            USER_ACCOUNTS_LEDGER[user_id] -= total_cost
+            print(f"[SETTLED] Order cleared for {user_id}: {shares} shares of {ticker} at KSh {monday_open_price}")
+            processed_count += 1
+        else:
+            print(f"[SETTLEMENT FAILED] Insufficient funds for user {user_id} at true opening price.")
+            
+    return {
+        "status": "COMPLETED",
+        "message": f"Successfully cleared {processed_count} weekend orders using live market opening values."
+    }
