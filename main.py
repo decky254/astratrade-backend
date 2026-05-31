@@ -27,7 +27,7 @@ USER_ACCOUNTS_LEDGER = {
 
 # 🔑 SECURE GATEWAY CREDENTIALS (Saves keys away from your public code repository)
 # In Render, add INTASEND_SECRET_KEY as an environment variable (either your test or live key)
-INTASEND_SECRET_KEY = os.getenv("INTASEND_SECRET_KEY", "your_api_token_here")
+INTASEND_SECRET_KEY = os.getenv("INTASEND_SECRET_KEY", "ISSecretKey_test_4c3c07d7-808a-4d39-a95a-828350cecd19")
 
 # --- DATA SCHEMAS ---
 class DepositPayload(BaseModel):
