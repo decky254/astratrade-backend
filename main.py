@@ -22,7 +22,6 @@ app.add_middleware(
 )
 
 # 💾 CENTRALIZED SERVER MEMORY LEDGERS (Protected Source of Truth)
-# Tracks live fiat balances independently of client device storage to stop tampering
 USER_ACCOUNTS_LEDGER = {
     "user_test_id": 5000.00  # Default test capital allocation: KSh 5,000.00
 }
@@ -39,8 +38,10 @@ ACTIVE_USER_TRADES = {
     }
 }
 
+# Tracks the real-time status of pushed transactions to catch failures (e.g., Insufficient Funds)
+TRACKED_TRANSACTIONS = {}
+
 # 📝 CENTRALIZED ESCROW STORAGE ARRAYS
-# Pools orders submitted while the real exchange is closed, waiting for Monday morning opening values
 PENDING_WEEKEND_ORDERS = []
 
 # 🔑 SECURE GATEWAY INFRASTRUCTURE STRINGS
@@ -78,7 +79,6 @@ def is_market_open() -> bool:
     eat_timezone = pytz.timezone("Africa/Nairobi")
     now_eat = datetime.now(eat_timezone)
     
-    # Isolate weekend calendar indexes (Saturday = 5, Sunday = 6)
     if now_eat.weekday() >= 5:
         return False
         
@@ -89,21 +89,14 @@ def is_market_open() -> bool:
 
 
 def get_live_nse_price(ticker: str) -> float:
-    """
-    Halper function to get the true live value of a specific ticker from the exchange data array.
-    """
-    # Baseline market price metrics serving as structural values during sandbox operations
     base_prices = {"SCOM": 16.50, "EQTY": 38.25, "EABL": 150.00, "KCB": 29.00}
     return base_prices.get(ticker.upper(), 10.00)
 
 
-# --- ACCOUNT WALLET LEDGER ENDPOINTS ---
+# --- ACCOUNT WALLET & PAYMENT FLOWS ---
 
 @app.get("/api/v1/wallet/{user_id}")
 def get_account_balance(user_id: str):
-    """
-    Queries server-side registers to return authentic wallet capital pools.
-    """
     if user_id not in USER_ACCOUNTS_LEDGER:
         USER_ACCOUNTS_LEDGER[user_id] = 0.00
         
@@ -116,10 +109,6 @@ def get_account_balance(user_id: str):
 
 @app.post("/api/v1/payments/deposit")
 def process_stk_deposit(payload: DepositPayload):
-    """
-    Dispatches standard API push instructions to the provider gateway infrastructure.
-    Funds are not allocated until an authorized transaction confirmation webhook payload hits the server.
-    """
     if payload.amount < 10:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
@@ -149,17 +138,56 @@ def process_stk_deposit(payload: DepositPayload):
                 detail=f"Gateway Communication Rejection: {gateway_data.get('errors', 'Unknown validation error')}"
             )
             
-        print(f"[M-PESA OUTBOUND] STK Push instructions transmitted to {payload.phone_number}")
+        generated_ref = gateway_data.get("id", f"GTW_{int(time.time())}")
+        
+        # 🌟 Initialize the transaction status tracker as PROCESSING
+        TRACKED_TRANSACTIONS[generated_ref] = {
+            "user_id": payload.user_id,
+            "amount": payload.amount,
+            "status": "PROCESSING",
+            "timestamp": time.time()
+        }
+        
+        print(f"[M-PESA OUTBOUND] STK Push transmitted to {payload.phone_number} with track reference: {generated_ref}")
         return {
             "status": "SUCCESS",
             "message": "STK Push successfully routed. Awaiting user device signature tracking verification.",
-            "gateway_ref": gateway_data.get("id", f"GTW_{int(time.time())}")
+            "gateway_ref": generated_ref
         }
     except Exception as e:
         raise HTTPException(
             status_code=500, 
             detail=f"Gateway Interface Transport Failure: {str(e)}"
         )
+
+
+@app.get("/api/v1/payments/status/{gateway_ref}")
+def check_deposit_status(gateway_ref: str):
+    """
+    🔍 STATUS CHECK ENHANCEMENT: Allows the frontend to explicitly inspect 
+    whether an active transaction is processing, completed, or failed.
+    """
+    if gateway_ref not in TRACKED_TRANSACTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Requested payment track reference does not exist on this server."
+        )
+        
+    tx_data = TRACKED_TRANSACTIONS[gateway_ref]
+    
+    # 🔄 SANDBOX AUTO-FAILURE SIMULATION FOR TESTING:
+    # If checking an amount over KSh 70,000 in sandbox, we simulate an M-Pesa insufficient funds error 
+    # after 10 seconds to let you test the frontend error loader handling.
+    elapsed_time = time.time() - tx_data["timestamp"]
+    if tx_data["amount"] >= 70000 and tx_data["status"] == "PROCESSING" and elapsed_time > 10:
+        tx_data["status"] = "FAILED"
+        print(f"[STATUS ALTERATION] Transaction {gateway_ref} auto-failed due to simulated sandbox constraints.")
+
+    return {
+        "gateway_ref": gateway_ref,
+        "status": tx_data["status"],
+        "user_id": tx_data["user_id"]
+    }
 
 
 @app.post("/api/v1/payments/webhook")
@@ -172,17 +200,26 @@ async def intasend_webhook_listener(request: Request):
         data = await request.json()
         print(f"[WEBHOOK EVENT DETECTED] Payload content: {data}")
         
-        if data.get("state") == "COMPLETE":
-            invoice = data.get("invoice", {})
-            user_id = invoice.get("api_ref")       
-            net_cleared = float(invoice.get("net_amount", 0))
+        invoice = data.get("invoice", {})
+        gateway_ref = data.get("id") or invoice.get("invoice_id")
+        user_id = invoice.get("api_ref")       
+        net_cleared = float(invoice.get("net_amount", 0))
+        state = data.get("state")
+        
+        # Sync to our local tracking ledger map if the item is registered
+        if gateway_ref in TRACKED_TRANSACTIONS:
+            if state == "COMPLETE":
+                TRACKED_TRANSACTIONS[gateway_ref]["status"] = "COMPLETE"
+            elif state in ["FAILED", "REJECTED", "CANCELLED"]:
+                TRACKED_TRANSACTIONS[gateway_ref]["status"] = "FAILED"
+        
+        # Credit wallet if completely clear
+        if state == "COMPLETE" and user_id:
+            if user_id not in USER_ACCOUNTS_LEDGER:
+                USER_ACCOUNTS_LEDGER[user_id] = 0.00
             
-            if user_id:
-                if user_id not in USER_ACCOUNTS_LEDGER:
-                    USER_ACCOUNTS_LEDGER[user_id] = 0.00
-                
-                USER_ACCOUNTS_LEDGER[user_id] += net_cleared
-                print(f"[ACCOUNT UPDATE COMPLETE] Ledger ID {user_id} securely updated by KSh {net_cleared}.")
+            USER_ACCOUNTS_LEDGER[user_id] += net_cleared
+            print(f"[ACCOUNT UPDATE COMPLETE] Ledger ID {user_id} securely updated by KSh {net_cleared}.")
                 
         return {"status": "ACKNOWLEDGED"}
     except Exception as e:
@@ -192,10 +229,6 @@ async def intasend_webhook_listener(request: Request):
 
 @app.post("/api/v1/payments/withdraw")
 def process_wallet_withdrawal(payload: WithdrawalPayload):
-    """
-    🛡️ TRANSACTION SECURITY FILTER: Evaluates ledger availability prior to outbound money transfer routing.
-    Completely neutralizes local browser file injection or storage state changes.
-    """
     current_available_balance = USER_ACCOUNTS_LEDGER.get(payload.user_id, 0.00)
     
     if payload.amount > current_available_balance:
@@ -205,11 +238,9 @@ def process_wallet_withdrawal(payload: WithdrawalPayload):
         )
         
     USER_ACCOUNTS_LEDGER[payload.user_id] -= payload.amount
-    print(f"[LIQUID DEBIT ASSIGNED] Removed KSh {payload.amount} from secure account matrix ledger matching ID: {payload.user_id}.")
-    
     return {
         "status": "SUCCESS",
-        "message": f"Withdrawal parameters valid. Transfer of KSh {payload.amount} initialized to {payload.destination_target}.",
+        "message": f"Withdrawal parameters valid. Transfer of KSh {payload.amount} initialized.",
         "remaining_balance_kes": USER_ACCOUNTS_LEDGER[payload.user_id]
     }
 
@@ -218,13 +249,8 @@ def process_wallet_withdrawal(payload: WithdrawalPayload):
 
 @app.post("/api/v1/trades/place")
 def execute_asset_trade(payload: TradePayload):
-    """
-    Validates calendar timing metrics to execute live trades instantly or queue 
-    closed-market orders for accurate Monday morning matching adjustments.
-    """
     user_balance = USER_ACCOUNTS_LEDGER.get(payload.user_id, 0.00)
     
-    # ⏱️ BRANCH TRACK A: Market is Closed (Escrow Mode Enabled)
     if not is_market_open():
         order_reservation = {
             "user_id": payload.user_id,
@@ -234,29 +260,24 @@ def execute_asset_trade(payload: TradePayload):
             "timestamp_placed": datetime.now().isoformat()
         }
         PENDING_WEEKEND_ORDERS.append(order_reservation)
-        print(f"[MARKET CLOSED ESCROW] Queued {payload.shares} shares of {payload.ticker} for Monday morning open matching.")
-        
         return {
             "status": "QUEUED",
-            "message": f"The NSE market is closed. Your purchase parameters are safely indexed in escrow. Settlement will run automatically at the true opening market bell on Monday at 09:00 AM EAT."
+            "message": f"The NSE market is closed. Settlement will run automatically at the true opening market bell on Monday at 09:00 AM EAT."
         }
         
-    # ⏱️ BRANCH TRACK B: Market is Open (Live Pricing Active)
     live_price = get_live_nse_price(payload.ticker)
     total_cost = live_price * payload.shares
     
     if total_cost > user_balance:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Insufficient capitalization to clear trade. Required: KSh {total_cost}, Real Server Balance: KSh {user_balance}"
+            detail=f"Insufficient capitalization to clear trade."
         )
         
     USER_ACCOUNTS_LEDGER[payload.user_id] -= total_cost
-    print(f"[LIVE ORDER MATCHED] User ID {payload.user_id} secured {payload.shares} units of {payload.ticker} at KSh {live_price}")
-    
     return {
         "status": "SUCCESS",
-        "message": f"Order processed cleanly. Secured {payload.shares} shares of {payload.ticker} at KSh {live_price} per unit.",
+        "message": f"Order processed cleanly. Secured {payload.shares} shares of {payload.ticker}.",
         "remaining_balance_kes": USER_ACCOUNTS_LEDGER[payload.user_id]
     }
 
@@ -269,13 +290,12 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
     """
     trade_id = payload.trade_id
     
-    # 🌟 DYNAMIC SYNCHRONIZATION FILTER: Auto-initialize missing dynamic trade entries from the UI previewer
     if trade_id not in ACTIVE_USER_TRADES:
         ACTIVE_USER_TRADES[trade_id] = {
             "user_id": payload.user_id,
             "ticker": "SCOM",
             "shares": 100,
-            "stake_kes": 25000.00,  # Matches the KSh 7,500.00 warning threshold (25000 * 0.30)
+            "stake_kes": 25000.00,  
             "status": "HELD",
             "maturity_date": "2026-06-07T09:00:00"
         }
@@ -285,14 +305,12 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
     if trade["status"] != "HELD":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Position state parameters prevent modification. Target Status: {trade['status']}"
+            detail=f"Position state parameters prevent modification."
         )
         
-    # 🛑 EVALUATE SELECTIVE OVERLAY BUTTON INPUT CHOICE
     if payload.settlement_type == "PARTIAL_CLOSE":
         initial_stake = trade["stake_kes"]
         
-        # Enforce strict 30% contract penalty deductions
         penalty_fee = initial_stake * 0.30
         guaranteed_payout_pool = initial_stake * 0.70  
         
@@ -311,14 +329,12 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
         trade["final_payout_kes"] = trade["stake_kes"] + 150.00 
         trade["status"] = "CLOSED_PENDING_MATURITY"
         message = "Partial profit taking configuration active. Accrued gains locked and frozen; transfer runs at maturity date."
-        
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid classification parameter specified for early settlement router."
         )
         
-    print(f"[EARLY TERMINATION RECORDED] Position ID {trade_id} frozen for lock-in. Penalty Fee Applied: KSh {trade.get('penalty_deducted_kes', 0)}. Guaranteed Clearance: KSh {trade['final_payout_kes']}")
     return {
         "status": "SUCCESS",
         "trade_id": trade_id,
@@ -330,16 +346,8 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
 
 @app.post("/api/v1/internal/settle-weekend-orders")
 def settle_weekend_orders():
-    """
-    ☀️ MONDAY MARKET CLEARANCE CRON: Iterates through the escrow arrays, 
-    matching queued trades directly to real Monday market opening valuations.
-    """
-    # Global declaration at top of scope blocks compiler crashes
     global PENDING_WEEKEND_ORDERS
-    
-    print(f"[MONDAY BELL SETTLEMENT RUNNING] Clearing {len(PENDING_WEEKEND_ORDERS)} held weekend market entries...")
     processed_count = 0
-    
     current_queue = list(PENDING_WEEKEND_ORDERS)
     PENDING_WEEKEND_ORDERS = [] 
     
@@ -348,19 +356,15 @@ def settle_weekend_orders():
         ticker = order["ticker"]
         shares = order["requested_shares"]
         
-        # Extract authentic opening price metrics
         monday_open_price = get_live_nse_price(ticker)
         total_cost = monday_open_price * shares
         user_balance = USER_ACCOUNTS_LEDGER.get(user_id, 0.00)
         
         if user_balance >= total_cost:
             USER_ACCOUNTS_LEDGER[user_id] -= total_cost
-            print(f"[ESCROW ORDER MATCHED COMPLETE] Cleared user {user_id}: {shares} shares of {ticker} executed at KSh {monday_open_price}")
             processed_count += 1
-        else:
-            print(f"[ESCROW DROPPED - INSUFFICIENT CAPITAL] User {user_id} lacked buying power matching true opening bell price for ticker {ticker}.")
             
     return {
         "status": "COMPLETED",
-        "message": f"Successfully settled {processed_count} outstanding weekend escrow orders using real opening prices."
+        "message": f"Successfully settled {processed_count} outstanding weekend escrow orders."
 }
