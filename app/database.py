@@ -1,26 +1,11 @@
-from sqlalchemy import Column, Integer, Float, String, DateTime
-from datetime import datetime
-from .database import Base
+import os
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
-class UserAccount(Base):
-    __tablename__ = "user_accounts"
-    id = Column(String, primary_key=True)
-    balance = Column(Float, default=0.0)
+# Get the URL from Render's Environment Variable
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
-class Trade(Base):
-    __tablename__ = "trades"
-    id = Column(Integer, primary_key=True)
-    user_id = Column(String)
-    ticker = Column(String)
-    shares = Column(Integer)
-    price_at_entry = Column(Float)
-    status = Column(String, default="OPEN") # OPEN, CLOSED, LIQUIDATED
-    timestamp = Column(DateTime, default=datetime.utcnow)
-
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-    id = Column(Integer, primary_key=True)
-    user_id = Column(String)
-    action = Column(String)
-    amount = Column(Float)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
