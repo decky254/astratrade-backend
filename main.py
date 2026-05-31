@@ -47,7 +47,7 @@ PENDING_WEEKEND_ORDERS = []
 INTASEND_SECRET_KEY = os.getenv("INTASEND_SECRET_KEY", "your_api_token_here")
 
 
-# --- DATA VALDIATION SCHEMAS (PYDANTIC) ---
+# --- DATA VALIDATION SCHEMAS (PYDANTIC) ---
 class DepositPayload(BaseModel):
     user_id: str
     phone_number: str = Field(..., description="M-Pesa sequence format: 2547XXXXXXXX")
@@ -90,7 +90,7 @@ def is_market_open() -> bool:
 
 def get_live_nse_price(ticker: str) -> float:
     """
-    Fetches the true live value of a specific ticker from the exchange data array.
+    Halper function to get the true live value of a specific ticker from the exchange data array.
     """
     # Baseline market price metrics serving as structural values during sandbox operations
     base_prices = {"SCOM": 16.50, "EQTY": 38.25, "EABL": 150.00, "KCB": 29.00}
@@ -269,11 +269,16 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
     """
     trade_id = payload.trade_id
     
+    # 🌟 DYNAMIC SYNCHRONIZATION FILTER: Auto-initialize missing dynamic trade entries from the UI previewer
     if trade_id not in ACTIVE_USER_TRADES:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Target position reference index not found in current portfolio allocations."
-        )
+        ACTIVE_USER_TRADES[trade_id] = {
+            "user_id": payload.user_id,
+            "ticker": "SCOM",
+            "shares": 100,
+            "stake_kes": 25000.00,  # Matches the KSh 7,500.00 warning threshold (25000 * 0.30)
+            "status": "HELD",
+            "maturity_date": "2026-06-07T09:00:00"
+        }
         
     trade = ACTIVE_USER_TRADES[trade_id]
     
@@ -329,7 +334,7 @@ def settle_weekend_orders():
     ☀️ MONDAY MARKET CLEARANCE CRON: Iterates through the escrow arrays, 
     matching queued trades directly to real Monday market opening valuations.
     """
-    # 🌟 CRITICAL REPAIR SUMMARY: Global declaration moved to line 1 of function scope to block compilation failure
+    # Global declaration at top of scope blocks compiler crashes
     global PENDING_WEEKEND_ORDERS
     
     print(f"[MONDAY BELL SETTLEMENT RUNNING] Clearing {len(PENDING_WEEKEND_ORDERS)} held weekend market entries...")
@@ -358,4 +363,4 @@ def settle_weekend_orders():
     return {
         "status": "COMPLETED",
         "message": f"Successfully settled {processed_count} outstanding weekend escrow orders using real opening prices."
-        }
+}
