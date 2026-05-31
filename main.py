@@ -28,7 +28,7 @@ USER_ACCOUNTS_LEDGER = {
 }
 
 # 🔑 SECURE GATEWAY CREDENTIALS 
-INTASEND_SECRET_KEY = os.getenv("INTASEND_SECRET_KEY", "your_api_token_here")
+INTASEND_SECRET_KEY = os.getenv("INTASEND_SECRET_KEY", "ISSecretKey_test_5096f7c0-efbc-42d4-89bd-a66bfaa1cd59")
 
 # 📝 CENTRALIZED ORDER STORAGE MAPPING
 # Stores pending weekend orders awaiting execution on Monday morning at true market open
@@ -257,13 +257,14 @@ def settle_weekend_orders():
     """
     ☀️ MONDAY MARKET OPEN ENGINE: Loops through held weekend reservations,
     fetches true Monday market opening bell valuations, and clears the ledger.
-    Can be automated via a Render Cron Job set to run at 9:00 AM every Monday.
     """
+    # 🌟 FIXED STATEMENT: Declaring global status right at the absolute top of the scope
+    global PENDING_WEEKEND_ORDERS
+    
     print(f"[SETTLEMENT TRIGGER] Processing {len(PENDING_WEEKEND_ORDERS)} held weekend orders at market opening bell...")
     processed_count = 0
     
     # Make a copy of list to process and clear out securely
-    global PENDING_WEEKEND_ORDERS
     current_queue = list(PENDING_WEEKEND_ORDERS)
     PENDING_WEEKEND_ORDERS = [] 
     
