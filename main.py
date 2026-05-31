@@ -27,16 +27,7 @@ USER_ACCOUNTS_LEDGER = {
 }
 
 # In-memory tracking mimicking database registers for active customer market contracts
-ACTIVE_USER_TRADES = {
-    "trade_sample_001": {
-        "user_id": "user_test_id",
-        "ticker": "SCOM",
-        "shares": 100,
-        "stake_kes": 1650.00,
-        "status": "HELD",
-        "maturity_date": "2026-06-07T09:00:00"
-    }
-}
+ACTIVE_USER_TRADES = {}
 
 # Tracks the real-time status of pushed transactions to catch failures (e.g., Insufficient Funds)
 TRACKED_TRANSACTIONS = {}
@@ -67,7 +58,8 @@ class TradePayload(BaseModel):
 class EarlySettlementPayload(BaseModel):
     user_id: str
     trade_id: str
-    settlement_type: str = Field(..., description="User choice parameter configuration: 'PARTIAL_CLOSE' or 'PARTIAL_PROFIT'")
+    settlement_type: str = Field(..., description="User choice parameter configuration: 'PARTIAL_CLOSE'")
+    amount_kes: float = Field(..., description="Dynamic total stake passed directly from the active frontend viewport")
 
 
 # --- DATA ROUTING & TIME MARKET UTILITIES ---
@@ -140,7 +132,7 @@ def process_stk_deposit(payload: DepositPayload):
             
         generated_ref = gateway_data.get("id", f"GTW_{int(time.time())}")
         
-        # 🌟 Initialize the transaction status tracker as PROCESSING
+        # Initialize the transaction status tracker as PROCESSING
         TRACKED_TRANSACTIONS[generated_ref] = {
             "user_id": payload.user_id,
             "amount": payload.amount,
@@ -163,10 +155,6 @@ def process_stk_deposit(payload: DepositPayload):
 
 @app.get("/api/v1/payments/status/{gateway_ref}")
 def check_deposit_status(gateway_ref: str):
-    """
-    🔍 STATUS CHECK ENHANCEMENT: Allows the frontend to explicitly inspect 
-    whether an active transaction is processing, completed, or failed.
-    """
     if gateway_ref not in TRACKED_TRANSACTIONS:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -175,9 +163,8 @@ def check_deposit_status(gateway_ref: str):
         
     tx_data = TRACKED_TRANSACTIONS[gateway_ref]
     
-    # 🔄 SANDBOX AUTO-FAILURE SIMULATION FOR TESTING:
-    # If checking an amount over KSh 70,000 in sandbox, we simulate an M-Pesa insufficient funds error 
-    # after 10 seconds to let you test the frontend error loader handling.
+    # SANDBOX AUTO-FAILURE SIMULATION FOR TESTING:
+    # Over KSh 70,000, we auto-fail the transaction state after 10 seconds to allow interface timeout evaluations
     elapsed_time = time.time() - tx_data["timestamp"]
     if tx_data["amount"] >= 70000 and tx_data["status"] == "PROCESSING" and elapsed_time > 10:
         tx_data["status"] = "FAILED"
@@ -192,10 +179,6 @@ def check_deposit_status(gateway_ref: str):
 
 @app.post("/api/v1/payments/webhook")
 async def intasend_webhook_listener(request: Request):
-    """
-    🔄 WEBHOOK INTAKE PORTS: Captures incoming transaction completion payloads 
-    sent by the settlement server cluster.
-    """
     try:
         data = await request.json()
         print(f"[WEBHOOK EVENT DETECTED] Payload content: {data}")
@@ -206,14 +189,12 @@ async def intasend_webhook_listener(request: Request):
         net_cleared = float(invoice.get("net_amount", 0))
         state = data.get("state")
         
-        # Sync to our local tracking ledger map if the item is registered
         if gateway_ref in TRACKED_TRANSACTIONS:
             if state == "COMPLETE":
                 TRACKED_TRANSACTIONS[gateway_ref]["status"] = "COMPLETE"
             elif state in ["FAILED", "REJECTED", "CANCELLED"]:
                 TRACKED_TRANSACTIONS[gateway_ref]["status"] = "FAILED"
         
-        # Credit wallet if completely clear
         if state == "COMPLETE" and user_id:
             if user_id not in USER_ACCOUNTS_LEDGER:
                 USER_ACCOUNTS_LEDGER[user_id] = 0.00
@@ -262,7 +243,7 @@ def execute_asset_trade(payload: TradePayload):
         PENDING_WEEKEND_ORDERS.append(order_reservation)
         return {
             "status": "QUEUED",
-            "message": f"The NSE market is closed. Settlement will run automatically at the true opening market bell on Monday at 09:00 AM EAT."
+            "message": f"The NSE market is closed. Your purchase parameters are safely indexed in escrow. Settlement will run automatically at the true opening market bell on Monday at 09:00 AM EAT."
         }
         
     live_price = get_live_nse_price(payload.ticker)
@@ -285,32 +266,34 @@ def execute_asset_trade(payload: TradePayload):
 @app.post("/api/v1/trades/early-settlement")
 def process_early_trade_settlement(payload: EarlySettlementPayload):
     """
-    Manages premature contract cancellation options. Forfeits a 30% penalty charge 
-    on defensive closures while keeping the remaining 70% locked safely until the contract maturity date.
+    Manages premature contract cancellation options. Enforces a strict 30% contract penalty
+    calculated dynamically against the actual asset stake sent from the active frontend.
     """
     trade_id = payload.trade_id
+    initial_stake = payload.amount_kes
     
+    # 🌟 DYNAMIC REAL-TIME REGISTRATION FIX
     if trade_id not in ACTIVE_USER_TRADES:
         ACTIVE_USER_TRADES[trade_id] = {
             "user_id": payload.user_id,
             "ticker": "SCOM",
             "shares": 100,
-            "stake_kes": 25000.00,  
+            "stake_kes": initial_stake,  
             "status": "HELD",
             "maturity_date": "2026-06-07T09:00:00"
         }
         
     trade = ACTIVE_USER_TRADES[trade_id]
+    trade["stake_kes"] = initial_stake # Overwrite state map to ensure total structural alignment
     
     if trade["status"] != "HELD":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Position state parameters prevent modification."
+            detail="Position state parameters prevent modification."
         )
         
     if payload.settlement_type == "PARTIAL_CLOSE":
-        initial_stake = trade["stake_kes"]
-        
+        # 🧾 DYNAMIC MATHEMATICAL PROJECTIONS
         penalty_fee = initial_stake * 0.30
         guaranteed_payout_pool = initial_stake * 0.70  
         
@@ -325,29 +308,32 @@ def process_early_trade_settlement(payload: EarlySettlementPayload):
             f"directly to your wallet portfolio when the original 7-day maturity sequence concludes."
         )
         
-    elif payload.settlement_type == "PARTIAL_PROFIT":
-        trade["final_payout_kes"] = trade["stake_kes"] + 150.00 
-        trade["status"] = "CLOSED_PENDING_MATURITY"
-        message = "Partial profit taking configuration active. Accrued gains locked and frozen; transfer runs at maturity date."
+        print(f"[EARLY LIQUIDATION SUCCESS] Handled trade {trade_id}. Forfeited KSh {penalty_fee}, escrowed KSh {guaranteed_payout_pool}")
+        
+        return {
+            "status": "SUCCESS",
+            "trade_id": trade_id,
+            "current_position_state": trade["status"],
+            "penalty_deducted": penalty_fee,
+            "final_payout": guaranteed_payout_pool,
+            "message": message,
+            "release_date": trade["maturity_date"]
+        }
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid classification parameter specified for early settlement router."
         )
-        
-    return {
-        "status": "SUCCESS",
-        "trade_id": trade_id,
-        "current_position_state": trade["status"],
-        "message": message,
-        "release_date": trade["maturity_date"]
-    }
 
 
 @app.post("/api/v1/internal/settle-weekend-orders")
 def settle_weekend_orders():
+    # Global declaration at top of scope blocks compiler crashes
     global PENDING_WEEKEND_ORDERS
+    
+    print(f"[MONDAY BELL SETTLEMENT RUNNING] Clearing {len(PENDING_WEEKEND_ORDERS)} held weekend market entries...")
     processed_count = 0
+    
     current_queue = list(PENDING_WEEKEND_ORDERS)
     PENDING_WEEKEND_ORDERS = [] 
     
@@ -367,4 +353,4 @@ def settle_weekend_orders():
     return {
         "status": "COMPLETED",
         "message": f"Successfully settled {processed_count} outstanding weekend escrow orders."
-}
+    }             
