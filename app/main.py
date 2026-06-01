@@ -1,9 +1,11 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app import models, database, schemas
+import random
 
 app = FastAPI()
 
+# Dependency to get DB session
 def get_db():
     db = database.SessionLocal()
     try:
@@ -11,7 +13,7 @@ def get_db():
     finally:
         db.close()
 
-# --- Registration Route (Maintains ToS) ---
+# --- Registration Route ---
 @app.post("/register/")
 def register_user(user: schemas.UserCreate, request: Request, db: Session = Depends(get_db)):
     new_user = models.UserAccount(username=user.username)
@@ -19,23 +21,22 @@ def register_user(user: schemas.UserCreate, request: Request, db: Session = Depe
     db.commit()
     db.refresh(new_user)
     
-    # Log ToS agreement
+    # Audit log
     new_agreement = models.TermsAgreement(
-        user_id=new_user.id,
-        terms_version="v1.0",
-        ip_address=request.client.host
+        user_id=new_user.id, terms_version="v1.0", ip_address=request.client.host
     )
     db.add(new_agreement)
     db.commit()
     return {"message": "User registered and terms accepted."}
 
-# --- Binary Trading Route (Maintains House Edge & Caps) ---
+# --- Binary Trading Route ---
 @app.post("/trade/binary/")
 def place_binary_trade(user_id: int, symbol: str, stake: float, direction: str, db: Session = Depends(get_db)):
+    # 20% win probability implemented via random settlement in resolve_trade
     multiplier = 3.2
     potential_payout = stake * multiplier
     
-    # Apply House Protection Cap (5000 KES limit)
+    # Enforce House Cap (5000 KES)
     is_capped = potential_payout > 5000.0
     final_payout = 5000.0 if is_capped else potential_payout
         
@@ -51,5 +52,8 @@ def place_binary_trade(user_id: int, symbol: str, stake: float, direction: str, 
 # --- History View Route ---
 @app.get("/history/{user_id}/")
 def get_user_history(user_id: int, db: Session = Depends(get_db)):
+    # Settle trades first so user sees updated status
+    settle_user_trades(user_id, db) 
+    
     trades = db.query(models.BinaryTrade).filter(models.BinaryTrade.user_id == user_id).all()
     return {"history": trades}
