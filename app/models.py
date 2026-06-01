@@ -1,8 +1,9 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean
 from datetime import datetime
 from app.database import Base
+from pydantic import BaseModel
 
-# --- Database Models (Tables) ---
+# --- Database Models ---
 
 class Trade(Base):
     __tablename__ = "trades"
@@ -21,26 +22,25 @@ class Transaction(Base):
     user_id = Column(Integer)
     type = Column(String)  # "DEPOSIT" or "WITHDRAWAL"
     amount = Column(Float)
-    status = Column(String)  # "PENDING" or "COMPLETED"
+    status = Column(String)
     reference_code = Column(String)
 
 class TermsAgreement(Base):
     __tablename__ = "terms_agreements"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True)  # Links to the UserAccount
-    agreed_at = Column(DateTime, default=datetime.utcnow)  # Timestamp of agreement
-    terms_version = Column(String)  # To track which version they accepted
-    ip_address = Column(String)  # Audit log for the connection origin
+    user_id = Column(Integer, index=True)
+    agreed_at = Column(DateTime, default=datetime.utcnow)
+    terms_version = Column(String)
+    ip_address = Column(String)
 
-# --- Pydantic Schemas (For API Data Validation) ---
-
-from pydantic import BaseModel
-
-class TradeCreate(BaseModel):
-    symbol: str
-    amount: float
-
-class TransactionCreate(BaseModel):
-    user_id: int
-    type: str
-    amount: float
+class BinaryTrade(Base):
+    __tablename__ = "binary_trades"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True)
+    symbol = Column(String)
+    stake_amount = Column(Float)
+    direction = Column(String) # "CALL" or "PUT"
+    payout_multiplier = Column(Float)
+    is_capped = Column(Boolean)
+    status = Column(String, default="OPEN") # "OPEN", "WON", "LOST"
+    created_at = Column(DateTime, default=datetime.utcnow)
