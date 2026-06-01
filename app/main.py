@@ -1,24 +1,10 @@
-from fastapi import FastAPI, Depends
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app import models, database
-from app.models import Trade, TradeCreate
-
-# Create tables in DB
-models.Base.metadata.create_all(bind=database.engine)
 
 app = FastAPI()
 
-# Add CORS Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Database Dependency
+# Dependency to get DB session
 def get_db():
     db = database.SessionLocal()
     try:
@@ -26,14 +12,30 @@ def get_db():
     finally:
         db.close()
 
-@app.get("/")
-def read_root():
-    return {"message": "AstraTrade API is live!"}
+@app.post("/register/")
+def register_user(user: schemas.UserCreate, request: Request, db: Session = Depends(get_db)):
+    # 1. Check if user already exists
+    existing_user = db.query(models.UserAccount).filter(models.UserAccount.username == user.username).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
 
-@app.post("/trades/")
-def create_trade(trade: TradeCreate, db: Session = Depends(get_db)):
-    new_trade = Trade(symbol=trade.symbol, amount=trade.amount)
-    db.add(new_trade)
+    # 2. Create the user
+    new_user = models.UserAccount(username=user.username)
+    db.add(new_user)
     db.commit()
-    db.refresh(new_trade)
-    return {"message": "Trade saved successfully!", "trade_id": new_trade.id}
+    db.refresh(new_user)
+
+    # 3. Log the Terms of Service agreement
+    # We capture the client's IP from the request object
+    client_ip = request.client.host if request.client else "unknown"
+    
+    new_agreement = models.TermsAgreement(
+        user_id=new_user.id,
+        terms_version="v1.0",  # Increment this when you update your legal terms
+        ip_address=client_ip
+    )
+    
+    db.add(new_agreement)
+    db.commit()
+    
+    return {"message": "User registered and terms accepted successfully."}
